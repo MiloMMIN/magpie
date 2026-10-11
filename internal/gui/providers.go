@@ -70,6 +70,9 @@ type providerJSON struct {
 	Anthropic string            `json:"anthropic"`
 	Gemini    string            `json:"gemini,omitempty"` // a Gemini API's base (#1346)
 	Decide    string            `json:"decide,omitempty"` // a decision API: it only routes groups
+	// Backups are each protocol's spare base URLs, tried when the one
+	// asked can't be reached (provider.Provider.Backups)
+	Backups map[string][]string `json:"backups,omitempty"`
 	Catalog   string            `json:"catalog"`
 	Website   string            `json:"website"`
 	KeysURL   string            `json:"keysUrl"`
@@ -496,7 +499,7 @@ func agentUses(agents []*agent.Agent, findGroup func(string) (provider.Group, []
 func providerInfo(p provider.Provider, agents []agentUse) providerJSON {
 	out := providerJSON{
 		ID: p.ID, Name: p.Name, Icon: p.Icon, Preset: p.Preset, Host: p.Host(),
-		Chat: p.Chat, Responses: p.Responses, Anthropic: p.Anthropic, Gemini: p.Gemini, Decide: p.Decide, BaseAPI: p.BaseAPI, ModelTest: p.ModelTest(), TestsAs: p.TestClients(), DecideTest: p.AsksDecideModels(),
+		Chat: p.Chat, Responses: p.Responses, Anthropic: p.Anthropic, Gemini: p.Gemini, Decide: p.Decide, Backups: p.Backups, BaseAPI: p.BaseAPI, ModelTest: p.ModelTest(), TestsAs: p.TestClients(), DecideTest: p.AsksDecideModels(),
 		Catalog: p.Catalog, Website: p.Website, KeysURL: p.KeysURL,
 		Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, AccountNames: p.AccountNames, Headers: p.Headers, ExtraBody: p.ExtraBody, Searches: p.Searches, Cline: p.ClinePinnable(), PinUpstream: p.PinUpstream, Unredacted: p.Unredacted, BalanceURL: p.BalanceURL, BalancePath: p.BalancePath, ModelsURL: p.ModelsURL,
 		Ready: p.Ready(), Chosen: p.Picks(), Models: []modelJSON{}, Agents: []providerAgent{},
@@ -2029,6 +2032,11 @@ func typed(p, in provider.Provider, proxy *string) provider.Provider {
 		if v := strings.TrimSpace(f.v); v != "" {
 			*f.to = v
 		}
+	}
+	// the spare base URLs are set whole from the form, where one is given:
+	// an empty map clears them, nil (the field left out) keeps the saved
+	if in.Backups != nil {
+		p.Backups = in.Backups
 	}
 	if in.Headers != nil {
 		p.Headers = in.Headers

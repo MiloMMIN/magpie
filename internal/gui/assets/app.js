@@ -7561,7 +7561,7 @@ function asTyped() {
   if (!draft) return {};
   // many keys pasted (361 on Discord) are asked about by the first
   const keys = splitKeys(draft.key || "");
-  const body = { typed: true, key: keys.length > 1 ? keys[0] : (draft.key || "").trim(), chat: (draft.chat || "").trim(), responses: (draft.responses || "").trim(), anthropic: (draft.anthropic || "").trim(), gemini: (draft.gemini || "").trim(), modelsURL: (draft.modelsURL || "").trim() };
+  const body = { typed: true, key: keys.length > 1 ? keys[0] : (draft.key || "").trim(), chat: (draft.chat || "").trim(), responses: (draft.responses || "").trim(), anthropic: (draft.anthropic || "").trim(), gemini: (draft.gemini || "").trim(), backups: draft.backups, modelsURL: (draft.modelsURL || "").trim() };
   // a System One base is asked at POST …/systemone, not on the three APIs
   if (draft.api === "decide") body.decide = (draft.decide || "").trim();
   // a Vertex AI provider is asked at the project typed, with the
@@ -8239,7 +8239,7 @@ function baseAPIOf(p) {
 
 // draftOf is a saved provider as its editor's form holds it.
 function draftOf(p) {
-  return { id: p.id, name: p.name, preset: p.preset, chat: p.chat, responses: p.responses, anthropic: p.anthropic, gemini: p.gemini || "", catalog: p.catalog, decide: p.decide || "", key: "", api: baseAPIOf(p), chosen: pickedOf(p), extra: [], headers: headerRows(p.headers), extraBody: extraBodyText(p.extraBody), icon: p.icon || "", fallback: [...(p.fallback || [])], unlisted: !!p.unlisted, searches: !!p.searches, unredacted: !!p.unredacted, pinUpstream: !!p.pinUpstream, balanceURL: p.balanceURL || "", balancePath: p.balancePath || "", modelsURL: p.modelsURL || "", contexts: contextsText(p.contexts), outputs: contextsText(p.outputs), compacts: contextsText(p.compacts), keysUrl: p.keysUrl || "", ...proxyDraft(p), ...concurrencyDraft(p) };
+  return { id: p.id, name: p.name, preset: p.preset, chat: p.chat, responses: p.responses, anthropic: p.anthropic, gemini: p.gemini || "", catalog: p.catalog, decide: p.decide || "", backups: p.backups ? { ...p.backups } : undefined, key: "", api: baseAPIOf(p), chosen: pickedOf(p), extra: [], headers: headerRows(p.headers), extraBody: extraBodyText(p.extraBody), icon: p.icon || "", fallback: [...(p.fallback || [])], unlisted: !!p.unlisted, searches: !!p.searches, unredacted: !!p.unredacted, pinUpstream: !!p.pinUpstream, balanceURL: p.balanceURL || "", balancePath: p.balancePath || "", modelsURL: p.modelsURL || "", contexts: contextsText(p.contexts), outputs: contextsText(p.outputs), compacts: contextsText(p.compacts), keysUrl: p.keysUrl || "", ...proxyDraft(p), ...concurrencyDraft(p) };
 }
 
 // duplicateProvider opens the Add form on a copy of p (#268): its URLs,
@@ -8432,6 +8432,7 @@ function drawEditor(p, presetID) {
       fillEndpoints();
       showSearch();
       showLocal();
+      showBackups();
     };
     queueMicrotask(() => slide(seg, "api"));
     url = input(draft[apiField[draft.api]], urlHint(draft.api), "url");
@@ -8443,6 +8444,77 @@ function drawEditor(p, presetID) {
     };
     const urlWrap = el("div", "stack");
     urlWrap.append(seg, url);
+    // a vendor's spare base URLs for this API, asked in order when the one
+    // above can't be reached — folded open on "+ Backup base URLs", rows
+    // drag to reorder (Provider.Backups; the saved order is the ask order)
+    const backups = el("div", "bu");
+    const buState = { open: false };
+    const backupList = () => (draft.backups?.[apiField[draft.api]] || []);
+    const writeBackups = (us) => {
+      const key = apiField[draft.api];
+      draft.backups = { ...(draft.backups || {}) };
+      if (us.length) draft.backups[key] = us; else delete draft.backups[key];
+      if (!Object.keys(draft.backups).length) delete draft.backups;
+    };
+    const buToggle = el("button", "bu-toggle", "");
+    buToggle.type = "button";
+    const drawBuToggle = () => {
+      const n = backupList().length;
+      buToggle.textContent = (buState.open ? "▾ " : "▸ ") + t("Backup base URLs") + (n ? ` (${n})` : "");
+    };
+    const buList = el("div", "bu-list");
+    const drawBuRows = () => {
+      const us = backupList();
+      buList.replaceChildren();
+      us.forEach((u, i) => {
+        const r = el("div", "bu-row");
+        r.tabIndex = 0;
+        r.title = t("Drag to move · Alt+↑/↓ from the keyboard");
+        const grip = el("span", "grip");
+        const inp = input(u, urlHint(draft.api), "url");
+        inp.oninput = () => { const a = [...backupList()]; a[i] = inp.value; writeBackups(a); };
+        const del = el("button", "bu-del", "×");
+        del.type = "button";
+        del.title = t("Remove");
+        del.onclick = () => { const a = [...backupList()]; a.splice(i, 1); writeBackups(a); drawBuRows(); drawBuToggle(); };
+        r.onkeydown = (e) => {
+          if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+          e.preventDefault();
+          const a = [...backupList()], to = i + (e.key === "ArrowUp" ? -1 : 1);
+          if (to < 0 || to >= a.length) return;
+          [a[i], a[to]] = [a[to], a[i]];
+          writeBackups(a); drawBuRows();
+          buList.children[to]?.focus({ preventScroll: true });
+        };
+        r.onpointerdown = (e) => {
+          if (e.target === inp || e.target === del) return;
+          dragRows(e, grip, r, buList, [...buList.children], (to) => {
+            const a = [...backupList()];
+            const [moved] = a.splice(i, 1);
+            a.splice(to, 0, moved);
+            writeBackups(a);
+            drawBuRows();
+          });
+        };
+        r.append(grip, inp, del);
+        buList.append(r);
+      });
+    };
+    const showBackups = () => {
+      drawBuToggle();
+      if (buState.open) drawBuRows();
+      buBody.hidden = !buState.open;
+    };
+    buToggle.onclick = () => { buState.open = !buState.open; showBackups(); };
+    if (backupList().length) buState.open = true;
+    const buBody = el("div", "bu-body");
+    const add = el("button", "bu-add", "+ " + t("Backup base URL"));
+    add.type = "button";
+    add.onclick = () => { writeBackups([...backupList(), ""]); drawBuRows(); drawBuToggle(); buBody.querySelector(".bu-row:last-child input")?.focus(); };
+    buBody.append(buList, add);
+    backups.append(buToggle, buBody);
+    showBackups();
+    urlWrap.append(backups);
     // the APIs that answered a detection, taken for the provider: their
     // URLs set, one that wasn't found there (404, 405) cleared, and the
     // base URL's protocol one of those that answered
@@ -8983,7 +9055,7 @@ function drawEditor(p, presetID) {
   const saveBtn = el("button", "text primary", t(isNew ? "Add" : "Save"));
   const save = () => {
     // new: an Add never replaces a provider that has the id already
-    const body = { id: p ? slug(draft.id) || p.id : draft.id, from: p?.id, name: draft.name, preset: draft.preset, key: draft.key || "", chat: draft.chat, responses: draft.responses, anthropic: draft.anthropic, gemini: (draft.gemini || "").trim(), catalog: draft.catalog, models: p ? chosenIds() : draft.extra, headers: headersOf(draft.headers), new: isNew };
+    const body = { id: p ? slug(draft.id) || p.id : draft.id, from: p?.id, name: draft.name, preset: draft.preset, key: draft.key || "", chat: draft.chat, responses: draft.responses, anthropic: draft.anthropic, gemini: (draft.gemini || "").trim(), backups: draft.backups || null, catalog: draft.catalog, models: p ? chosenIds() : draft.extra, headers: headersOf(draft.headers), new: isNew };
     if (isNew && draft.copyOf) body.copyOf = draft.copyOf;
     const xb = extraBodyOf(draft.extraBody);
     if (xb.error) { ed.querySelector(".extra-body textarea")?.focus({ preventScroll: true }); return editorError(t("Extra body: {why}", { why: xb.error }), "warn"); }
@@ -9747,7 +9819,7 @@ function detectAPIs(p, base, use) {
       const why = x.status ? `${x.status} · ${x.error}` : t(x.error || "");
       res.append(el("span", "", x.ok ? ledTook(x.ms) : why));
       res.title = (x.model ? t("model {model}", { model: x.model }) : "") + (x.ok ? "" : "\n" + why);
-      e.append(pl, el("code", "", x.base || "—"), res);
+      e.append(pl, el("code", "", x.answered || x.base || "—"), res);
       out.append(e);
     }
   };

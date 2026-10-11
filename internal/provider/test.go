@@ -28,6 +28,10 @@ type Result struct {
 	Millis   int64    `json:"ms"`
 	Model    string   `json:"model,omitempty"`
 	Error    string   `json:"error,omitempty"`
+	// Answered is the base URL the probe went to and got an answer
+	// from: the protocol's own, or one of its spares (Backups) when
+	// the first couldn't be reached
+	Answered string `json:"answered,omitempty"`
 }
 
 // Test sends the smallest possible request to each endpoint the vendor
