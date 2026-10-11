@@ -19,12 +19,14 @@ import (
 	"sync"
 
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/source"
 )
 
 // BunVersion is the Bun magpie downloads to run plugins with the first
 // time one is needed, and the oldest it runs them on: newer releases are
-// taken as they come (see CheckBun). Update bunSums below when it changes.
+// taken as they come (see CheckBun). Update bunSums below, testenv.MinBun
+// and test.yml's bun-version when it changes.
 const BunVersion = "1.4.2"
 
 // bunSums are the SHA-256s of BunVersion's builds, from Bun's own
@@ -221,14 +223,15 @@ func getURLFrom(ctx context.Context, url string, limit int64, mirror bool) ([]by
 }
 
 // bunCommand runs bun with args in dir, the environment's proxy settings
-// passed on, the roots the system trusts added to Bun's (caEnv), and npm's
-// registry in China with the 「国内镜像」 switch on (its packages are npm's
-// own, checked against the integrity npm gave).
+// passed on (a SOCKS5 one bridged, as Bun can't use it: #1409), the roots
+// the system trusts added to Bun's (caEnv), and npm's registry in China
+// with the 「国内镜像」 switch on (its packages are npm's own, checked
+// against the integrity npm gave).
 var bunCommand = func(ctx context.Context, bun, dir string, args ...string) *exec.Cmd {
 	cmd := command(ctx, bun, args...)
 	cmd.Dir = dir
-	cmd.Env = append(env(), "BUN_INSTALL_CACHE_DIR="+filepath.Join(filepath.Dir(catalog.CachePath()), "bun", "install-cache"))
-	cmd.Env = append(cmd.Env, caEnv(cmd.Env)...)
+	cmd.Env = append(netproxy.EnvForBun(env()), "BUN_INSTALL_CACHE_DIR="+filepath.Join(filepath.Dir(catalog.CachePath()), "bun", "install-cache"))
+	cmd.Env = append(cmd.Env, caEnv(cmd.Env, dir)...)
 	cmd.Env = append(cmd.Env, registryEnv(cmd.Env)...)
 	return cmd
 }

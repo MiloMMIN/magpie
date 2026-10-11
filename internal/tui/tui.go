@@ -97,6 +97,10 @@ type model struct {
 	w, h    int
 	syncing bool
 
+	// failover: what an agent going through magpie for account failover
+	// alone, not connected, says of it (agent.FailoverSaid, #1385)
+	failover []string
+
 	page      page
 	back      mode // where esc goes from a picker or a line to type
 	ask       ask
@@ -184,8 +188,10 @@ func newModel() model {
 
 func (m *model) reload() {
 	m.values = make([]map[string]string, len(m.agents))
+	m.failover = make([]string, len(m.agents))
 	for i, a := range m.agents {
 		m.values[i] = a.Values()
+		m.failover[i] = a.FailoverSaid()
 	}
 	switch m.page {
 	case pageProviders:
@@ -411,7 +417,7 @@ func (m *model) openFieldPicker() {
 	a := m.agents[m.row]
 	f := a.Fields[m.col]
 	cur := m.values[m.row][f.Key]
-	items := f.Options(m.values[m.row])
+	items := a.Picks(f, m.values[m.row])
 	items = withCurrent(items, cur)
 	set := f.Set
 	label := a.Name + " · " + f.Label
@@ -811,6 +817,9 @@ func (m model) viewList() string {
 				line += sMuted.Render(" " + f.Label)
 			}
 			line += cell + " "
+		}
+		if i < len(m.failover) && m.failover[i] != "" {
+			line += sMuted.Render(" · " + m.failover[i])
 		}
 		if sel {
 			p := tilde(a.Path)

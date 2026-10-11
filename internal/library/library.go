@@ -79,6 +79,12 @@ type Applied struct {
 	InstrHash    string   `json:"instrHash,omitempty"` // of the part last written
 	MCP          []string `json:"mcp,omitempty"`
 	Skills       []string `json:"skills,omitempty"`
+	// ToolsOff are, for each server, the tools magpie put in the list its
+	// entry has of those the agent leaves out; ToolRules the rules beside
+	// the servers magpie added to leave tools out (Claude Code's deny
+	// rules, OpenCode's tools keys). Neither holds one the user had.
+	ToolsOff  map[string][]string `json:"toolsOff,omitempty"`
+	ToolRules []string            `json:"toolRules,omitempty"`
 }
 
 var mu sync.Mutex // one change at a time, from the page or the CLI's process
@@ -102,6 +108,7 @@ func load() (*Library, error) {
 	if l.Applied == nil {
 		l.Applied = map[string]*Applied{}
 	}
+	l.heal() // magpie's own servers run this computer's magpie (self_here.go)
 	return l, nil
 }
 
@@ -113,6 +120,15 @@ func (l *Library) save() error {
 		sort.Strings(a.MCP)
 		sort.Strings(a.Skills)
 	}
+	// a skill or server on no agent is on none, [] not null: a list sorted
+	// with slices.Sorted, or cloned, from an empty one is nil (#1217)
+	for _, s := range l.Skills {
+		s.Agents = orNone(s.Agents)
+	}
+	for _, s := range l.MCP {
+		s.Agents = orNone(s.Agents)
+	}
+	l.Instructions.Agents = orNone(l.Instructions.Agents)
 	b, err := json.MarshalIndent(l, "", "  ")
 	if err != nil {
 		return err
@@ -201,6 +217,7 @@ func change(f func(l *Library) error) (*Result, error) {
 	if err := f(l); err != nil {
 		return nil, err
 	}
+	l.heal() // a server f brought in, from another computer too
 	if err := l.save(); err != nil {
 		return nil, err
 	}

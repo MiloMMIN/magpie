@@ -27,6 +27,12 @@ type Route struct {
 	imageTurn     string
 	imageCaller   string
 	imageProvider string
+	// turn: a request of an agent's turn, for the notification that it is
+	// done (turns); dirOf, the folder its body says, read once as a turn
+	// starts; tools, whether its reply called a tool
+	turn          bool
+	dirOf         func() string
+	tools         *toolScan
 	Seq           int64        `json:"seq"` // the trace's count when it last changed
 	ID            int64        `json:"id"`
 	Time          time.Time    `json:"time"`
@@ -45,6 +51,9 @@ type Route struct {
 	Rule          *RuleHit     `json:"rule,omitempty"`          // the group's rules for it, when it has any
 	SealedTask    bool         `json:"sealedTask,omitempty"`    // only ChatGPT accounts can read this subagent's task
 	LeadAccount   string       `json:"leadAccount,omitempty"`   // the parent account put first for a sealed task
+	// Subagent is a Codex subagent's request put on the model set for
+	// Codex's subagents, or kept on the one asked for and why
+	Subagent *SubagentPick `json:"subagent,omitempty"`
 	// Nested: the rules of the groups in the group, down the way to the
 	// one that went first, each as it decided
 	Nested   []NestedRule `json:"nested,omitempty"`
@@ -67,6 +76,8 @@ type Route struct {
 	// counts: streamed replies only (#196)
 	TTFT      int64 `json:"ttft,omitempty"`
 	FirstText int64 `json:"firstText,omitempty"`
+	// Flow: the ms its content took to come (Call.Flow)
+	Flow int64 `json:"flow,omitempty"`
 	// Served: the model the reply says answered, as the last try has it;
 	// Swapped: another than the one that try asked for; Routed: that try
 	// asked another magpie's routing group, and Served is its member
@@ -75,6 +86,12 @@ type Route struct {
 	Routed  bool   `json:"routed,omitempty"`
 	// Upstream: the provider an aggregator said answered behind it
 	Upstream string `json:"upstream,omitempty"`
+	// Prompt: what the prompt held, part by part, and the window it went
+	// into (prompt.go)
+	Prompt *Prompt `json:"prompt,omitempty"`
+	// Conv: the conversation a request without a session id is part of,
+	// as a digest of its first user turn (conversationID)
+	Conv string `json:"conv,omitempty"`
 }
 
 // RouteUsage is one billable attempt's pricing inputs, kept in routing history.
@@ -111,6 +128,9 @@ type GroupRef struct {
 	Via []string `json:"via,omitempty"`
 	// Fast: those of Members sent in their vendor's fast mode
 	Fast []string `json:"fast,omitempty"`
+	// Paused: the models a pause rule left out of the request, so not in
+	// Members (provider.PausedOut)
+	Paused []provider.Paused `json:"paused,omitempty"`
 }
 
 // SubGroup is a routing group in the group a request asked for.
@@ -242,6 +262,8 @@ type Try struct {
 	// first text, when it streamed any (#196)
 	TTFT      int64 `json:"ttft,omitempty"`
 	FirstText int64 `json:"firstText,omitempty"`
+	// Flow: the ms its content took to come (Call.Flow)
+	Flow int64 `json:"flow,omitempty"`
 	// Served: the model its reply said answered, when it named one;
 	// Swapped: another model than Model, not just its dated name; Routed:
 	// Model is another magpie's routing group, and Served the member it
@@ -256,6 +278,12 @@ type Try struct {
 	Error    string `json:"error,omitempty"`
 	Rest     *Rest  `json:"rest,omitempty"`  // how long it now sits out; none when it was the last to try
 	Again    int64  `json:"again,omitempty"` // ms waited before it was tried again, the last one left
+	// Replan: every member had failed in a way that passes, so after
+	// Again the Replan of them that may answer by then were asked again,
+	// in turn, within the group's Patience (seconds) for the request
+	// (#1418)
+	Replan   int `json:"replan,omitempty"`
+	Patience int `json:"patience,omitempty"`
 	// Queued: ms it waited for one of its key's or account's slots, the
 	// provider's MaxConcurrency out already (concurrency.go)
 	Queued int64 `json:"queued,omitempty"`
@@ -337,6 +365,11 @@ type trace struct {
 	routes []*Route
 	wake   chan struct{}
 	totals Totals
+	// bodies are the last requests' masked bodies, for their prompts'
+	// text (PromptText): in memory only, never in the history
+	bodies []keptBody
+	// turns follows agents' turns, to say when one is done (TurnDone)
+	turns turns
 }
 
 // Totals count the requests routed since the gateway started.
@@ -375,6 +408,7 @@ func (t *trace) begin(r Route) *Route {
 		r.Tries = []Try{}
 	}
 	rp := &r
+	t.turns.begin(rp, time.Now())
 	t.routes = append(t.routes, rp)
 	t.trim()
 	t.changed()
@@ -418,6 +452,7 @@ func (t *trace) update(r *Route, f func(r *Route)) {
 		if r.Status >= 400 || r.Error != "" {
 			t.totals.Errors++
 		}
+		t.turns.end(r, r.Status < 400 && r.Error == "" && !r.tools.called(), time.Now())
 		if keepRoutes {
 			c := *r
 			c.Order = append([]Weighed{}, r.Order...) // [] for none: the GUI reads it as a list

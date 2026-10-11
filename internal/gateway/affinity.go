@@ -80,11 +80,17 @@ type stick struct {
 var sticks = struct {
 	sync.Mutex
 	m map[string]stick // scope|conversation → who answered it last
+	// opening: scope|conversation → who a conversation that nobody has
+	// answered yet was sent to, while its first request is out. In turn,
+	// leastHeld counts them with those answered, so a burst of new
+	// conversations spreads rather than all going to the one holding the
+	// fewest a moment before (#1342)
+	opening map[string]stick
 	// the file as last read or written: another magpie's writes (the one
 	// handing over to this one) are read again when a conversation is missed
 	from string
 	mod  time.Time
-}{m: map[string]stick{}}
+}{m: map[string]stick{}, opening: map[string]stick{}}
 
 // sticksSaving keeps one write of the file at a time, the latest last.
 var sticksSaving sync.Mutex
@@ -120,7 +126,7 @@ func stickOf(key string) (stick, bool) {
 		return stick{}, false
 	}
 	var saved map[string]savedStick
-	if json.Unmarshal(b, &saved) != nil {
+	if decodeJSON(b, &saved) != nil {
 		return stick{}, false
 	}
 	for k, v := range saved {
@@ -299,7 +305,7 @@ func affine(scope, mode string, rotate bool, in http.Header, from provider.Proto
 		}
 	case "first":
 		if rotate {
-			cs, pl = leastHeld(scope, cs, pl)
+			cs, pl = leastHeld(scope, key, cs, pl)
 		}
 	}
 	return cs, pl, a, key
@@ -315,16 +321,21 @@ const heldFor = 30 * time.Minute
 // (#946): in turn counts requests, not conversations, so a second session
 // started after the first had sent an even number of them went to the
 // model the first was kept on. Of those held on as few, routing's order
-// stands.
-func leastHeld(scope string, cs []candidate, pl planned) ([]candidate, planned) {
+// stands. A conversation whose first request is still out counts where it
+// was sent (sticks.opening, under key until opened ends it): many started
+// at once all went to the one holding the fewest before any of them was
+// answered (#1342: 24 requests at once over 5 accounts).
+func leastHeld(scope, key string, cs []candidate, pl planned) ([]candidate, planned) {
 	if len(cs) < 2 || len(pl.order) < len(cs) {
 		return cs, pl
 	}
 	if strings.HasPrefix(scope, provider.GroupPrefix) {
-		if _, ms, ok := provider.FindGroup(scope); ok {
+		if g, ms, ok := provider.FindGroup(scope); ok {
 			for _, m := range ms {
-				if len(m.Path) > 1 {
-					return cs, pl // a group in the group: its own routing orders its models (#576)
+				// a group in the group, or a provider routed its own way:
+				// its own routing orders its models or keys (#576)
+				if len(m.Path) > 1 || ownRouting(m.Provider, g) {
+					return cs, pl
 				}
 			}
 		}
@@ -332,12 +343,18 @@ func leastHeld(scope string, cs []candidate, pl planned) ([]candidate, planned) 
 	now := time.Now()
 	held := map[string]int{}
 	sticks.Lock()
-	for k, st := range sticks.m {
-		if strings.HasPrefix(k, scope+"|") && now.Sub(st.at) <= heldFor {
-			held[st.who+"/"+provider.WithMemberEffort(st.model, st.effort)]++
+	defer sticks.Unlock()
+	for _, m := range []map[string]stick{sticks.m, sticks.opening} {
+		for k, st := range m {
+			if strings.HasPrefix(k, scope+"|") && now.Sub(st.at) <= heldFor {
+				held[st.who+"/"+provider.WithMemberEffort(st.model, st.effort)]++
+			}
 		}
 	}
-	sticks.Unlock()
+	defer func() {
+		// counted from now until it is answered or ends
+		sticks.opening[key] = stick{rest: cs[0].rest, who: cs[0].who(), model: cs[0].model, effort: cs[0].effort, at: now}
+	}()
 	if len(held) == 0 {
 		return cs, pl
 	}
@@ -388,6 +405,7 @@ func answered(key string, c candidate, turn, cacheRead int) {
 	now := time.Now()
 	sticks.Lock()
 	sticks.m[key] = stick{rest: c.rest, who: c.who(), model: c.model, effort: c.effort, turn: turn, at: now, cacheRead: cacheRead}
+	delete(sticks.opening, key)
 	if len(sticks.m) > 4096 {
 		for k, st := range sticks.m {
 			if now.Sub(st.at) > stickKeep {
@@ -405,6 +423,14 @@ func answered(key string, c candidate, turn, cacheRead int) {
 // widest match keeps a conversation on an account whose answerer's model
 // has since left the group, so a stick that only matched by its model
 // would leave the next request kept on the account that just broke off.
+// opened ends a request's part in leastHeld's count of conversations being
+// opened, however it ended.
+func opened(key string) {
+	sticks.Lock()
+	delete(sticks.opening, key)
+	sticks.Unlock()
+}
+
 func unanswered(key string, c candidate) {
 	sticks.Lock()
 	st, ok := stickOf(key)
@@ -463,7 +489,7 @@ func seals(body []byte, kinds ...string) [][sha256.Size]byte {
 	var q struct {
 		Input []sealedItem `json:"input"`
 	}
-	if json.Unmarshal(body, &q) != nil {
+	if decodeJSON(body, &q) != nil {
 		return nil
 	}
 	var out [][sha256.Size]byte
@@ -520,17 +546,17 @@ func withoutRefused(key, who string, body []byte) ([]byte, bool) {
 		return nil, false
 	}
 	var q map[string]json.RawMessage
-	if json.Unmarshal(body, &q) != nil {
+	if decodeJSON(body, &q) != nil {
 		return nil, false
 	}
 	var items []json.RawMessage
-	if json.Unmarshal(q["input"], &items) != nil {
+	if decodeJSON(q["input"], &items) != nil {
 		return nil, false
 	}
 	kept := items[:0:0]
 	for _, it := range items {
 		var t sealedItem
-		if json.Unmarshal(it, &t) == nil && sealedKinds[t.Type] && t.Enc != "" && r.seals[sha256.Sum256([]byte(t.Enc))] {
+		if decodeJSON(it, &t) == nil && sealedKinds[t.Type] && t.Enc != "" && r.seals[sha256.Sum256([]byte(t.Enc))] {
 			continue
 		}
 		kept = append(kept, it)
@@ -559,7 +585,7 @@ func withoutCompaction(body []byte) ([]byte, bool) {
 	var q struct {
 		Input []sealedItem `json:"input"`
 	}
-	if json.Unmarshal(body, &q) != nil {
+	if decodeJSON(body, &q) != nil {
 		return nil, false
 	}
 	for _, it := range q.Input {
@@ -574,11 +600,11 @@ func withoutCompaction(body []byte) ([]byte, bool) {
 // types.
 func withoutKinds(body []byte, kinds ...string) ([]byte, bool) {
 	var q map[string]json.RawMessage
-	if json.Unmarshal(body, &q) != nil {
+	if decodeJSON(body, &q) != nil {
 		return nil, false
 	}
 	var items []json.RawMessage
-	if json.Unmarshal(q["input"], &items) != nil {
+	if decodeJSON(q["input"], &items) != nil {
 		return nil, false
 	}
 	kept := items[:0:0]
@@ -586,7 +612,7 @@ func withoutKinds(body []byte, kinds ...string) ([]byte, bool) {
 		var t struct {
 			Type string `json:"type"`
 		}
-		if json.Unmarshal(it, &t) == nil && slices.Contains(kinds, t.Type) {
+		if decodeJSON(it, &t) == nil && slices.Contains(kinds, t.Type) {
 			continue
 		}
 		kept = append(kept, it)

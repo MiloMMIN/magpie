@@ -149,7 +149,7 @@ func (w quotaWait) run(ctx context.Context, t quotaTarget, timeout time.Duration
 				why = cmp.Or(why, q.Error)
 				continue
 			}
-			if !provider.UsedUp(q) {
+			if !provider.UsedUp(q, now) {
 				return q, nil
 			}
 			known++
@@ -276,7 +276,7 @@ func quotaWaitCmd(args []string) error {
 		} else {
 			provider.AskUsage()
 		}
-		rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		rctx, cancel := context.WithTimeout(provider.Asked(ctx), 30*time.Second)
 		defer cancel()
 		return provider.Allotted(rctx)
 	}

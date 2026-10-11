@@ -3,8 +3,8 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -170,10 +170,7 @@ func TestAllLoginsMoved(t *testing.T) {
 // installed first when it isn't there, the code the page asks about shown
 // to copy, and the account it signs in to named as the one in use.
 func TestMovedSignInAsBuiltIn(t *testing.T) {
-	bun, err := exec.LookPath("bun")
-	if err != nil {
-		t.Skip("no bun on PATH")
-	}
+	bun := testenv.Bun(t)
 	home := claudeHome(t)
 	t.Setenv("MAGPIE_BUN", bun)
 	t.Cleanup(plugin.Settle)
@@ -226,10 +223,17 @@ func TestMovedSignInAsBuiltIn(t *testing.T) {
 		return ""
 	}
 	t.Cleanup(func() { DevinExecutable = oldExe })
-	release := make(chan struct{})
+	// an early failure ends the test with the install still held: the
+	// fake then gives up without touching the test that has gone
+	release, ended := make(chan struct{}), make(chan struct{})
+	t.Cleanup(func() { close(ended) })
 	oldRun := runInstaller
 	runInstaller = func(ctx context.Context, c agentCLI) ([]byte, error) {
-		<-release
+		select {
+		case <-release:
+		case <-ended:
+			return nil, errors.New("the test ended")
+		}
 		os.MkdirAll(filepath.Dir(exe), 0o755)
 		return nil, testenv.WriteProgram(exe, "#!/bin/sh\n")
 	}

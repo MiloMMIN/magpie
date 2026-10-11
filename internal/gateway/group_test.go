@@ -56,9 +56,11 @@ func fresh(t *testing.T) {
 	levelled.Unlock()
 	provider.ForgetCopilotForTest()
 	provider.ForgetRemoteCardsForTest()
+	provider.ForgetKeptCardsForTest()
 	remoteRefreshes.Lock()
 	remoteRefreshes.at = map[string]time.Time{}
 	remoteRefreshes.Unlock()
+	resetAuthThrottle()
 	forgetRouting()
 }
 

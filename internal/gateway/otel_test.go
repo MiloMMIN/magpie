@@ -15,8 +15,18 @@ import (
 
 	"github.com/yetone/magpie/internal/access"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/sessions"
 	"github.com/yetone/magpie/internal/usage"
 )
+
+// fastOTel has the exporter read the agents' transcripts and send what it
+// holds within a fraction of a second, not every 2s and 5s, so a test that
+// waits for an export doesn't wait seconds (#1654).
+func fastOTel(t *testing.T) {
+	every, sessionsEvery := usage.OTelEvery, usage.OTelSessionsEvery
+	usage.OTelEvery, usage.OTelSessionsEvery = 200*time.Millisecond, 50*time.Millisecond
+	t.Cleanup(func() { usage.OTelEvery, usage.OTelSessionsEvery = every, sessionsEvery })
+}
 
 func TestOTelSessionDedupOnlyUnkeyedLoopback(t *testing.T) {
 	f := &fake{ctype: "application/json", reply: `{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}}`}
@@ -53,6 +63,7 @@ func TestOTelSessionDedupOnlyUnkeyedLoopback(t *testing.T) {
 	t.Setenv("MAGPIE_OTEL_HEADERS", "")
 	t.Setenv("MAGPIE_OTEL_METRICS", "false")
 	t.Setenv("MAGPIE_OTEL_SESSIONS", "true")
+	fastOTel(t)
 	stop := usage.StartOTel()
 	t.Cleanup(stop)
 	// Header-only first request: no user event or completed observation exists.
@@ -100,11 +111,16 @@ func TestOTelSessionDedupOnlyUnkeyedLoopback(t *testing.T) {
 	if !usage.OTelSessionAgent("pi") {
 		t.Fatal("local Pi reader unavailable")
 	}
+	if err := sessions.SetGatewayRecording(true, false); err != nil {
+		t.Fatal(err)
+	}
 	cases := []struct {
 		name, addr, key         string
 		session, override, kind string
 		dedup                   bool
 	}{
+		{"unseen request- session only", "127.0.0.1:1234", "", "", "request-recorded", "", false},
+		{"visible native with request- override", "127.0.0.1:1234", "", "session", "request-recorded", "", true},
 		{"loopback", "127.0.0.1:1234", "", "", "", "", true},
 		{"IPv6 loopback", "[::1]:1234", "", "", "", "", true},
 		{"LAN", "192.168.1.5:1234", "key", "", "", "", false},
@@ -187,6 +203,7 @@ func TestOTelSessionDiscoveredDuringFirstRequest(t *testing.T) {
 	t.Setenv("MAGPIE_OTEL_ENDPOINT", "http://127.0.0.1:1")
 	t.Setenv("MAGPIE_OTEL_HEADERS", "")
 	t.Setenv("MAGPIE_OTEL_SESSIONS", "true")
+	fastOTel(t)
 	stop := usage.StartOTel()
 	t.Cleanup(stop)
 	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
@@ -258,6 +275,7 @@ func TestOTelFastRequestTranscriptDiscovery(t *testing.T) {
 			t.Setenv("MAGPIE_OTEL_HEADERS", "")
 			t.Setenv("MAGPIE_OTEL_SESSIONS", "true")
 			t.Setenv("MAGPIE_OTEL_METRICS", "false")
+			fastOTel(t)
 			stop := usage.StartOTel()
 			t.Cleanup(stop)
 			req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m1","messages":[{"role":"user","content":"hello"}]}`))
@@ -300,6 +318,7 @@ func TestOTelExportsGatewayUsageWithoutContent(t *testing.T) {
 	t.Setenv("MAGPIE_OTEL_ENDPOINT", collector.URL)
 	t.Setenv("MAGPIE_OTEL_HEADERS", "")
 	t.Setenv("MAGPIE_OTEL_METRICS", "false")
+	fastOTel(t)
 	stop := usage.StartOTel()
 	t.Cleanup(stop)
 	code, body := post(t, "/v1/chat/completions", `{"model":"m1","messages":[{"role":"user","content":"PRIVATE-PROMPT"}]}`)
@@ -346,6 +365,7 @@ func TestOTelExportsBodiesWhenOn(t *testing.T) {
 			t.Setenv("MAGPIE_OTEL_HEADERS", "")
 			t.Setenv("MAGPIE_OTEL_METRICS", "false")
 			t.Setenv("MAGPIE_OTEL_BODIES", c.bodies)
+			fastOTel(t)
 			stop := usage.StartOTel()
 			t.Cleanup(stop)
 			secret := "sk-ant-api03-" + strings.Repeat("Q7x", 30)
@@ -419,6 +439,7 @@ func TestOTelWaterfallIncludesUnbilledFallback(t *testing.T) {
 	t.Setenv("MAGPIE_OTEL_HEADERS", "")
 	t.Setenv("MAGPIE_OTEL_METRICS", "true")
 	t.Setenv("MAGPIE_OTEL_BODIES", "false")
+	fastOTel(t)
 	stop := usage.StartOTel()
 	t.Cleanup(stop)
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatReq))
@@ -527,6 +548,7 @@ func TestOTelWaterfallFailureAndCancellation(t *testing.T) {
 			t.Setenv("MAGPIE_OTEL_HEADERS", "")
 			t.Setenv("MAGPIE_OTEL_METRICS", "false")
 			t.Setenv("MAGPIE_OTEL_BODIES", "false")
+			fastOTel(t)
 			stop := usage.StartOTel()
 			t.Cleanup(stop)
 			req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m1","messages":[{"role":"user","content":"hi"}]}`)).WithContext(ctx)
@@ -585,6 +607,7 @@ func TestOTelExportsWholeBodiesWhenOn(t *testing.T) {
 			t.Setenv("MAGPIE_OTEL_METRICS", "false")
 			t.Setenv("MAGPIE_OTEL_BODIES", "true")
 			t.Setenv("MAGPIE_OTEL_BODIES_WHOLE", fmt.Sprintf("%t", c.whole))
+			fastOTel(t)
 			stop := usage.StartOTel()
 			t.Cleanup(stop)
 			s := New()
@@ -673,6 +696,7 @@ func TestOTelWholeWaterfallFallback(t *testing.T) {
 	t.Setenv("MAGPIE_OTEL_METRICS", "false")
 	t.Setenv("MAGPIE_OTEL_BODIES", "true")
 	t.Setenv("MAGPIE_OTEL_BODIES_WHOLE", "true")
+	fastOTel(t)
 	stop := usage.StartOTel()
 	t.Cleanup(stop)
 	request := `{"model":"plan/m1","messages":[{"role":"user","content":"` + big + `"}],"metadata":{"api_key":"` + secret + `"}}`
@@ -777,6 +801,7 @@ func TestOTelClaudeMainAndChildDedupRetainsHelper(t *testing.T) {
 			t.Setenv("MAGPIE_OTEL_SESSIONS", "true")
 			t.Setenv("MAGPIE_OTEL_METRICS", "false")
 			t.Setenv("MAGPIE_OTEL_BODIES", "false")
+			fastOTel(t)
 			stop := usage.StartOTel()
 			t.Cleanup(stop)
 			root := filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), "projects", "p")

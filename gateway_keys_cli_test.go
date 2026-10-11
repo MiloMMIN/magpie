@@ -63,6 +63,44 @@ func TestGatewayKeyCLI(t *testing.T) {
 	}
 }
 
+// add --key keeps a value clients already send (love1sbug on X); "-"
+// takes it from stdin.
+func TestGatewayKeyCLIOwnValue(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", os.Getenv("HOME"))
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var out bytes.Buffer
+	if err := gatewayKeysTo(&out, []string{"gateway-key", "add", "Family", "--key", "cpa-family-key-0042"}); err != nil || strings.TrimSpace(out.String()) != "cpa-family-key-0042" {
+		t.Fatal(out.String(), err)
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.WriteString("cpa-friend-key-0007\n")
+	w.Close()
+	stdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = stdin }()
+	if err := gatewayKeysTo(&bytes.Buffer{}, []string{"gateway-key", "add", "Friend", "--key", "-"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"cpa-family-key-0042", "cpa-friend-key-0007"} {
+		if _, ok := access.Authenticate(k); !ok {
+			t.Fatal("not a key:", k)
+		}
+	}
+	out.Reset()
+	if err := gatewayKeysTo(&out, []string{"gateway-key", "list"}); err != nil || strings.Contains(out.String(), "cpa-family") || !strings.Contains(out.String(), "…0042") {
+		t.Fatal("list must mask an own value", out.String(), err)
+	}
+	for _, args := range [][]string{{"add", "X", "--key"}, {"add", "X", "--key", "short"}, {"add", "X", "--key", "cpa-family-key-0042"}, {"rotate", "x", "--key", "cpa-other-key-0001"}} {
+		if err := gatewayKeysTo(&bytes.Buffer{}, append([]string{"gateway-key"}, args...)); err == nil {
+			t.Error("accepted", args)
+		}
+	}
+}
+
 func TestGatewayKeyListWithReadOnlyMigration(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	s := settings.Settings{LAN: true, LANKey: "sk-magpie-fixture-cli"}
@@ -121,16 +159,38 @@ func TestGatewayKeyLimitCLI(t *testing.T) {
 		t.Fatal(got)
 	}
 	for _, args := range [][]string{{"limit"}, {"limit", id, "hour", "--tokens", "5"}, {"limit", id, "day"}, {"limit", id, "day", "--tokens", "lots"},
-		{"limit", id, "day", "--cost"}, {"limit", id, "day", "--what"}, {"limit", "missing", "day", "--tokens", "5"}, {"limit", id, "off", "extra"}} {
+		{"limit", id, "day", "--cost"}, {"limit", id, "day", "--what"}, {"limit", "missing", "day", "--tokens", "5"}, {"limit", id, "off", "extra"},
+		{"limit", id, "0d", "--tokens", "5"}, {"limit", id, "3651d", "--tokens", "5"}, {"limit", id, "xd", "--tokens", "5"}, {"limit", id, "days", "--tokens", "5"}, {"limit", id, "reset", "extra"}} {
 		if _, err := call(args...); err == nil {
 			t.Error("accepted", args)
 		}
+	}
+	// every 10 days (#1509), and Reset
+	if got, err = call("limit", id, "10d", "--cost", "800"); err != nil || !strings.Contains(got, "this 10-day cycle") {
+		t.Fatal(got, err)
+	}
+	keys, _ = access.List()
+	if l := keys[0].Limit; l == nil || l.Period != "days" || l.Days != 10 || l.Cost != 800 || l.Since.IsZero() {
+		t.Fatalf("limit kept as %+v", keys[0].Limit)
+	}
+	if got, _ := call("list"); !strings.Contains(got, "$0.00/$800.00 every 10 days") {
+		t.Fatal(got)
+	}
+	since := keys[0].Limit.Since
+	if got, err = call("limit", id, "reset"); err != nil || !strings.Contains(got, "this 10-day cycle") {
+		t.Fatal(got, err)
+	}
+	if keys, _ = access.List(); keys[0].Limit.Since.Before(since) || keys[0].Limit.Cost != 800 {
+		t.Fatalf("reset kept %+v", keys[0].Limit)
 	}
 	if got, err := call("limit", id, "off"); err != nil || !strings.Contains(got, "no limit") {
 		t.Fatal(got, err)
 	}
 	if keys, _ = access.List(); keys[0].Limit != nil {
 		t.Fatal("off kept", keys[0].Limit)
+	}
+	if _, err := call("limit", id, "reset"); err == nil {
+		t.Fatal("reset a key with no limit")
 	}
 }
 

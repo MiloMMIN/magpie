@@ -773,7 +773,7 @@ func wbCallVia(ctx context.Context, do func(*http.Request) (*http.Response, erro
 // app asks for a state and a page, opens the page for the user to sign in,
 // then polls for the token and the account.
 func startWorkBuddySignIn(s *signInFlow, w *wbSite) error {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(s.via(context.Background()))
 	var state struct {
 		State   string `json:"state"`
 		AuthURL string `json:"authUrl"`
@@ -867,6 +867,13 @@ func wbKeepSignIn(w *wbSite, c wbCreds, name string) (who string, again, using b
 		return "", false, false, err
 	}
 	using = hasOwn && own.UID == c.UID
+	// its kept usage reading was read under the old sign-in (as
+	// addSideLogin drops it), once loginsMu is let go
+	defer func() {
+		if err == nil {
+			StaleAllowance(w.id, who)
+		}
+	}()
 	loginsMu.Lock()
 	defer loginsMu.Unlock()
 	ls := readLogins()

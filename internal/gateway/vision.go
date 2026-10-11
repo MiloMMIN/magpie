@@ -71,8 +71,8 @@ type describeFor struct {
 	session string
 }
 
-func withDescribeFor(ctx context.Context, agent, model, session string) context.Context {
-	return context.WithValue(ctx, describeForKey{}, describeFor{&CallFor{Agent: agent, Model: model}, session})
+func withDescribeFor(ctx context.Context, agent, model, session string, unknown bool) context.Context {
+	return context.WithValue(ctx, describeForKey{}, describeFor{&CallFor{Agent: agent, Model: model, Unknown: unknown, Missing: VisionMissing()}, session})
 }
 
 func describedFor(ctx context.Context) *CallFor {
@@ -94,13 +94,17 @@ func blindTo(pid, model string, in *bool) bool {
 
 // seer is the model that describes images: the Settings' Vision while it
 // resolves, else AutoVision's. None when Vision is off or no model sees.
+// A Vision that no longer resolves (its provider removed or off, the model
+// gone) is not described with in silence by AutoVision's: VisionMissing
+// names it, the description's row in Routing and Settings › Models say it
+// is missing, and a request turned away for want of a describer says so.
 func seer() (string, bool) {
 	switch v := provider.HeldSettings().Vision; v {
 	case "off":
 		return "", false
 	case "":
 	default:
-		if _, _, ok := provider.Resolve(v); ok {
+		if pickedMissing(v) == "" {
 			return v, true
 		}
 	}
@@ -108,8 +112,60 @@ func seer() (string, bool) {
 	return m, m != ""
 }
 
+// VisionMissing is the model Settings › Models › Image recognition names
+// when magpie can't find it any more, so that AutoVision's describes in its
+// place. "" when none is named, Vision is off, or it resolves.
+func VisionMissing() string { return pickedMissing(provider.HeldSettings().Vision) }
+
+// pickedMissing is a model the user picked in Settings (v) that doesn't
+// resolve: "" for none picked, off, or one magpie finds.
+func pickedMissing(v string) string {
+	if v == "" || v == "off" {
+		return ""
+	}
+	if _, _, ok := provider.Resolve(v); ok {
+		return ""
+	}
+	return v
+}
+
+// missingSeerNote is what a request turned away, or whose image wasn't
+// described, says of a picked Image recognition model that is missing.
+func missingSeerNote() string {
+	if v := VisionMissing(); v != "" {
+		return fmt.Sprintf("; the Image recognition model picked in magpie's Settings, %q, isn't set up any more: pick another in Settings → Models → Image recognition", v)
+	}
+	return ""
+}
+
+// noSeerNote is what a request turned away for an image says of why no
+// model described it: the picked one is missing, Image recognition is
+// off, or none of the models the user enabled can see.
+func noSeerNote() string {
+	if n := missingSeerNote(); n != "" {
+		return n
+	}
+	if provider.HeldSettings().Vision == "off" {
+		return "; Image recognition is off in magpie's Settings → Models"
+	}
+	if _, ok := seer(); !ok {
+		return "; none of the models enabled in magpie can see images to describe it: enable one that can, or pick one in Settings → Models → Image recognition"
+	}
+	return ""
+}
+
+// autoSeerNote is what a request whose image wasn't described says of a
+// describer magpie picked itself, which the user may not know of.
+func autoSeerNote(see string) string {
+	if provider.HeldSettings().Vision != "" {
+		return ""
+	}
+	return fmt.Sprintf("; magpie picked %s of the models you enabled: pick another in Settings → Models → Image recognition", see)
+}
+
 // AutoVision is the model magpie picks to describe images when the
-// Settings name none: a small model that sees of the providers set up — a
+// Settings name none: a small model that sees, of the models the user
+// enabled on the providers switched on (smallModel) — a
 // Claude account's, a Codex account's, the cheapest of an API key's,
 // another account's. "" when no model sees.
 func AutoVision() string {
@@ -320,7 +376,7 @@ func smallModelWhere(p provider.Provider, keep func(catalog.Model) bool) (string
 	if id == "" {
 		return "", 0
 	}
-	for _, m := range p.Available() {
+	for _, m := range p.Exposed() {
 		if m.ID == id && m.Price != nil {
 			return id, m.Price.Input + m.Price.Output
 		}
