@@ -170,8 +170,23 @@ func (q Provider) detectOne(proto Protocol, m string, wait time.Duration) (Detec
 		return d, nil
 	}
 	return d, func(ctx context.Context) Result {
-		u, body := tiny(k, proto, UpstreamName(q, m))
-		return probe(ctx, k, proto, u, k.tested(body), m, wait)
+		// the protocol's URL first, then each of its spares until one
+		// answers: the ask as the vendor takes it
+		bases := append([]string{q.Base(proto)}, q.BackupBases(proto)...)
+		var last Result
+		for _, b := range bases {
+			if b == "" {
+				continue
+			}
+			qq := q.WithBase(proto, b)
+			u, body := tiny(k, proto, UpstreamName(qq, m))
+			last = probe(ctx, k, proto, u, k.tested(body), m, wait)
+			last.Answered = b
+			if last.OK {
+				return last
+			}
+		}
+		return last
 	}
 }
 

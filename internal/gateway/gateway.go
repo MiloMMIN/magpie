@@ -3067,6 +3067,21 @@ func markAntigravityRefused(w http.ResponseWriter, p provider.Provider, system, 
 // 403 or 400 it can mend (Provider.Retry) is asked again, a few times at most.
 func (s *Server) forward(ctx context.Context, p provider.Provider, to provider.Protocol, path string, body []byte, in http.Header) (*http.Response, error) {
 	res, err := s.forwardOnce(ctx, p, to, path, body, in)
+	// a vendor's spare base URLs (Provider.Backups) take over when the one
+	// asked can't be reached — connection refused, timed out, or its edge
+	// down (502/503/504) — the key and request unchanged
+	if ctx.Err() == nil && (err != nil || res.StatusCode == http.StatusBadGateway || res.StatusCode == http.StatusServiceUnavailable || res.StatusCode == http.StatusGatewayTimeout) && len(p.BackupBases(to)) > 0 {
+		for _, base := range p.BackupBases(to) {
+			if res != nil {
+				io.Copy(io.Discard, io.LimitReader(res.Body, 1<<20))
+				res.Body.Close()
+			}
+			res, err = s.forwardOnce(ctx, p.WithBase(to, base), to, path, body, in)
+			if err == nil && res.StatusCode != http.StatusBadGateway && res.StatusCode != http.StatusServiceUnavailable && res.StatusCode != http.StatusGatewayTimeout {
+				break
+			}
+		}
+	}
 	if err == nil && (res.StatusCode == http.StatusForbidden || res.StatusCode == http.StatusBadRequest) && p.Retries() {
 		// an account that can mend what the refusal names (a Factory org
 		// the server won't take; a model Copilot's Auto picked that the

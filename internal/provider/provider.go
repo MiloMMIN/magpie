@@ -88,6 +88,12 @@ type Provider struct {
 	// Jev answers), for routing groups' choices of model and effort. The
 	// provider may also serve conversations on the other endpoints.
 	Decide string `json:"decide,omitempty"`
+	// Backups are spare base URLs for a protocol, for a vendor that keeps
+	// several for reachability: the one saved under its field above is
+	// asked first, then each of these in turn when the one before can't
+	// be reached. Keyed by the field's name: "chat", "responses",
+	// "anthropic", "gemini".
+	Backups map[string][]string `json:"backups,omitempty"`
 	// BaseAPI is the API the user gave a custom provider's Base URL as,
 	// in its editor: "chat", "responses", "anthropic", "gemini" or "decide". The
 	// editor shows that pick again, where it would otherwise show the
@@ -1015,6 +1021,42 @@ func normalize(p Provider) Provider {
 		}
 	}
 	p.Gemini = GeminiBase(p.Gemini)
+	// each spare base is normalized as its protocol's main one is: trimmed,
+	// https assumed, Anthropic's /v1 and /v1/messages cut, Gemini's spelled
+	for _, proto := range []Protocol{Chat, Responses, Anthropic, Gemini} {
+		us := p.Backups[string(proto)]
+		for i := range us {
+			us[i] = strings.TrimRight(strings.TrimSpace(us[i]), "/")
+			if us[i] != "" && !strings.Contains(us[i], "://") {
+				us[i] = "https://" + us[i]
+			}
+		}
+		if proto == Anthropic {
+			for i, u := range us {
+				for _, suf := range []string{"/v1/messages", "/v1"} {
+					if b, ok := strings.CutSuffix(u, suf); ok && strings.Contains(b, "://") && len(b) > len("https://") {
+						u = b
+						break
+					}
+				}
+				us[i] = u
+			}
+		}
+		if proto == Gemini {
+			for i, u := range us {
+				us[i] = GeminiBase(u)
+			}
+		}
+		us = slices.DeleteFunc(us, func(u string) bool { return u == "" || u == p.Base(proto) })
+		if len(us) == 0 {
+			delete(p.Backups, string(proto))
+		} else {
+			p.Backups[string(proto)] = us
+		}
+	}
+	if len(p.Backups) == 0 {
+		p.Backups = nil
+	}
 	// a pick whose URL is gone (cleared from the CLI) is no pick
 	if p.BaseAPI != "" && p.baseOf(p.BaseAPI) == "" {
 		p.BaseAPI = ""
@@ -1191,6 +1233,28 @@ func (p Provider) Base(proto Protocol) string {
 		return p.Gemini
 	}
 	return ""
+}
+
+// WithBase is p with the base URL for proto replaced, for the gateway's
+// try of a backup base (Backups) on a provider it got by value.
+func (p Provider) WithBase(proto Protocol, base string) Provider {
+	switch proto {
+	case Chat:
+		p.Chat = base
+	case Responses:
+		p.Responses = base
+	case Anthropic:
+		p.Anthropic = base
+	case Gemini:
+		p.Gemini = base
+	}
+	return p
+}
+
+// BackupBases is the protocol's spare base URLs, in order (Backups):
+// the main one (Base) is asked first, these after it can't be reached.
+func (p Provider) BackupBases(proto Protocol) []string {
+	return p.Backups[string(proto)]
 }
 
 // Speaks lists the protocols the vendor serves natively, preferred first.
