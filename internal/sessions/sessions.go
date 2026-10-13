@@ -97,7 +97,7 @@ type Session struct {
 	// Gateway: seen only through magpie's gateway, with no file of the
 	// agent's on this computer (external.go)
 	Gateway bool      `json:"gateway,omitempty"`
-	Agent   string    `json:"agent"` // magpie agent id: claude, codex, opencode, pi, omp, zcode, dsh, cline, qoder, qoder-cn, grok, workbuddy, droid, cursor, hermes, alma
+	Agent   string    `json:"agent"` // magpie agent id: claude, codex, opencode, pi, omp, zcode, dsh, cline, qoder, qoder-cn, grok, workbuddy, droid, cursor, hermes, alma, kimi
 	ID      string    `json:"id"`
 	Cwd     string    `json:"cwd"`
 	Title   string    `json:"title"` // the name it was given, else the agent's own title, else the first prompt
@@ -351,6 +351,7 @@ type file struct {
 	alma     *almaStore
 	rev      string
 	readOnly bool
+	editor   *cursorEditorMeta
 	// wsl: the WSL distro whose home it is in; cold: that distro isn't
 	// running, and the file, as last listed, is not to be opened (that
 	// would start the distro)
@@ -429,8 +430,8 @@ func ccFiles(agent, dir string) []file {
 func allFiles() []file {
 	var out []file
 	for _, fs := range [][]file{callFiles(), openCodeFiles(), piFiles(),
-		wslFiles("pi"), zcodeFiles(), dshFiles(), clineFiles(), ccFiles("qoder", QoderDir("qoder")), ccFiles("qoder-cn", QoderDir("qoder-cn")),
-		grokFiles(), workbuddyFiles(), droidFiles(), ompFiles(), cursorFiles(), hermesFiles(), almaFiles()} {
+		wslFiles("pi", "omp", "kimi"), zcodeFiles(), dshFiles(), clineFiles(), ccFiles("qoder", QoderDir("qoder")), ccFiles("qoder-cn", QoderDir("qoder-cn")),
+		grokFiles(), workbuddyFiles(), droidFiles(), ompFiles(), cursorFiles(), hermesFiles(), almaFiles(), kimiFiles()} {
 		out = append(out, fs...)
 	}
 	return out
@@ -453,8 +454,11 @@ func Dirs() []string {
 		{OmpDir(), filepath.Join(OmpDir(), "sessions")},
 		{FactoryDir(), filepath.Join(FactoryDir(), "sessions")},
 		{CursorDir(), filepath.Join(CursorDir(), "chats")},
+		{cursorDataDir(), filepath.Join(cursorDataDir(), "projects")},
+		{filepath.Dir(cursorEditorDB()), cursorEditorDB()},
 		{AlmaDir(), almaDB()},
 		{MiniMaxDir(), minimaxSessions()},
+		{KimiCodeDir(), kimiSessions()},
 	} {
 		if _, err := os.Stat(d.sessions); err == nil {
 			out = append(out, d.dir)
@@ -679,7 +683,7 @@ func refresh(want, all []file) {
 		if f.cold {
 			continue // in a stopped WSL distro: what was read of it stands
 		}
-		if s := cache[f.path]; s == nil || s.Size != f.size || s.Mod != f.mod.UnixNano() || (f.agent == "hermes" && (f.hermes == nil || f.hermes.revision == "" || s.DBRevision != f.hermes.revision)) || (f.agent == "alma" && s.DBRevision != f.rev) {
+		if s := cache[f.path]; s == nil || s.Size != f.size || s.Mod != f.mod.UnixNano() || (f.agent == "hermes" && (f.hermes == nil || f.hermes.revision == "" || s.DBRevision != f.hermes.revision)) || ((f.agent == "alma" || f.agent == "cursor") && s.DBRevision != f.rev) {
 			todo = append(todo, f)
 		}
 	}
@@ -891,6 +895,9 @@ func pricer() func(string) *catalog.Price {
 
 // Reset forgets the kept parses, in memory only.
 func Reset() {
+	desktopTitles.Lock()
+	desktopTitles.names, desktopTitles.last = nil, nil
+	desktopTitles.Unlock()
 	directoryCache.Lock()
 	directoryCache.entries = map[string]directoryEntry{}
 	directoryCache.Unlock()
@@ -1019,6 +1026,9 @@ func assemble(fs []file, price func(string) *catalog.Price) (Session, bool) {
 	if s.Agent == "codex" && s.WSL == "" && custom == "" {
 		custom = CodexTitles([]string{s.ID})[s.ID]
 	}
+	if s.Agent == "claude-desktop" && s.WSL == "" {
+		custom = cmp.Or(DesktopTitles([]string{s.ID})[s.ID], custom)
+	}
 	s.Title = cmp.Or(custom, named, s.Title, first)
 	for _, m := range models {
 		if p := price(m.Model); p != nil {
@@ -1046,7 +1056,7 @@ func assemble(fs []file, price func(string) *catalog.Price) (Session, bool) {
 		return s, false // nothing was said in it
 	}
 	if !s.ReadOnly {
-		s.Resume = resumeCommand(s.WSL, s.Agent, s.ID, s.Cwd)
+		s.Resume = resumeCommand(s.WSL, s.Agent, s.ID, s.Cwd, s.Path)
 	}
 	s.Carry, s.Transcript = carries(s), HasTranscript(s.Agent)
 	return s, true
@@ -1074,6 +1084,8 @@ func parserFor(agent string) sessionParser {
 		return sessionParser{whole: parseCline}
 	case "grok":
 		return sessionParser{whole: parseGrok}
+	case "kimi":
+		return sessionParser{whole: parseKimi}
 	case "droid":
 		return sessionParser{whole: parseDroid}
 	case "cursor":
@@ -1346,14 +1358,15 @@ func makers(id string) []string {
 // ---- resuming ---------------------------------------------------------------
 
 var safeID = regexp.MustCompile(`^[0-9A-Za-z_-]+$`)
+var safeOmpProfile = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
 // ResumeCommand is the shell line that picks a session up again in its
 // folder, or "" for an id that isn't plain.
-func ResumeCommand(agent, id, cwd string) string { return resumeCommand("", agent, id, cwd) }
+func ResumeCommand(agent, id, cwd string) string { return resumeCommand("", agent, id, cwd, "") }
 
 // resumeCommand is ResumeCommand for a session in a WSL distro too, when
 // distro is set: see wslResume.
-func resumeCommand(distro, agent, id, cwd string) string {
+func resumeCommand(distro, agent, id, cwd, path string) string {
 	if !safeID.MatchString(id) {
 		return ""
 	}
@@ -1377,8 +1390,16 @@ func resumeCommand(distro, agent, id, cwd string) string {
 		run = "grok --resume " + id
 	case "omp":
 		run = "omp --resume " + id
+		if profile := ompProfile(path); profile != "" {
+			if !safeOmpProfile.MatchString(profile) {
+				return ""
+			}
+			run = "omp --profile " + profile + " --resume " + id
+		}
 	case "droid":
 		run = "droid --resume " + id
+	case "kimi":
+		run = "kimi --session " + id
 	case "cursor":
 		// its chats are looked up by the folder it runs in
 		if cwd == "" {
@@ -1419,16 +1440,23 @@ func Find(agent, id string) (Session, bool) {
 // Titles is the title of each session named by key (agent:id, as Get takes
 // it) that has its files on this computer: the name it was given, else the
 // agent's own title, else its first prompt. A key with no files, or a
-// session with no title, is left out. The Routing page names its sessions
-// with it (#1293).
+// session with no title, is left out. Desktop's local metadata can name a
+// session without its CLI transcript. The Routing page uses this too (#1293).
 func Titles(keys []string) map[string]string {
 	out := map[string]string{}
 	if len(keys) == 0 {
 		return out
 	}
 	want := make(map[string]bool, len(keys))
+	var desktopIDs []string
 	for _, k := range keys {
 		want[k] = true
+		if id, ok := strings.CutPrefix(k, "claude-desktop:"); ok {
+			desktopIDs = append(desktopIDs, id)
+		}
+	}
+	for id, name := range DesktopTitles(desktopIDs) {
+		out["claude-desktop:"+id] = name
 	}
 	mu.Lock()
 	defer mu.Unlock()
