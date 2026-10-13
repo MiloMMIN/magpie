@@ -33,6 +33,11 @@ type Detection struct {
 	// take it: …/v1 for OpenAI's two, the root for Anthropic's, …/v1beta
 	// for Gemini's.
 	Base string `json:"base"`
+	// Spares is what each backup base URL of the API answered, URL by
+	// URL (Result.Answered), in the order they are tried; nil when the
+	// API keeps none. The result above stays the ask's verdict: the
+	// first base that answered, or the last tried when none did.
+	Spares []Result `json:"spares,omitempty"`
 }
 
 // DetectBase is base as proto takes it: an endpoint pasted whole (…/v1/chat/
@@ -103,7 +108,7 @@ func (p Provider) Detect(ctx context.Context, base, model string, picked ...stri
 		if m == "" {
 			m = detectModel(ids, proto)
 		}
-		var ask func(context.Context) Result
+		var ask func(context.Context) []Result
 		out[i], ask = q.detectOne(proto, m, testWait)
 		if ask == nil {
 			continue
@@ -111,7 +116,8 @@ func (p Provider) Detect(ctx context.Context, base, model string, picked ...stri
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			out[i].Result = ask(ctx)
+			rs := ask(ctx)
+			out[i].Result, out[i].Spares = verdict(rs)
 		}()
 	}
 	wg.Wait()
@@ -154,7 +160,10 @@ func (p Provider) detecting(base string) (Provider, error) {
 
 // detectOne is model's detection on proto as far as it can be told
 // without asking, and, when it can be asked, the ask (nil when not).
-func (q Provider) detectOne(proto Protocol, m string, wait time.Duration) (Detection, func(context.Context) Result) {
+// The ask returns one Result per base tried — the API's own first, then
+// each of its spares (Backups), every one asked so a spare that is down
+// shows rather than ride on the verdict; verdict picks the answer.
+func (q Provider) detectOne(proto Protocol, m string, wait time.Duration) (Detection, func(context.Context) []Result) {
 	d := Detection{Result: Result{Protocol: proto, Model: m}, Base: q.Base(proto)}
 	if d.Base == "" {
 		d.Error = "no URL to ask"
@@ -169,25 +178,38 @@ func (q Provider) detectOne(proto Protocol, m string, wait time.Duration) (Detec
 		d.Error = "no key is on for this endpoint"
 		return d, nil
 	}
-	return d, func(ctx context.Context) Result {
-		// the protocol's URL first, then each of its spares until one
-		// answers: the ask as the vendor takes it
+	return d, func(ctx context.Context) []Result {
 		bases := append([]string{q.Base(proto)}, q.BackupBases(proto)...)
-		var last Result
+		rs := make([]Result, 0, len(bases))
 		for _, b := range bases {
 			if b == "" {
 				continue
 			}
-			qq := q.WithBase(proto, b)
-			u, body := tiny(k, proto, UpstreamName(qq, m))
-			last = probe(ctx, k, proto, u, k.tested(body), m, wait)
-			last.Answered = b
-			if last.OK {
-				return last
-			}
+			kk := k.WithBase(proto, b)
+			u, body := tiny(kk, proto, UpstreamName(kk, m))
+			r := probe(ctx, kk, proto, u, kk.tested(body), m, wait)
+			r.Answered = b
+			rs = append(rs, r)
 		}
-		return last
+		return rs
 	}
+}
+
+// verdict is the answer the bases tried give the ask: the first that
+// answered, else the last tried, and the spares' own answers beside it,
+// in try order.
+func verdict(rs []Result) (Result, []Result) {
+	out := rs[len(rs)-1]
+	for _, r := range rs {
+		if r.OK {
+			out = r
+			break
+		}
+	}
+	if len(rs) == 1 {
+		return out, nil
+	}
+	return out, rs[1:]
 }
 
 // DetectDecide asks the System One API at p's decision URL (…/systemone
@@ -289,7 +311,8 @@ func (p Provider) DetectModels(ctx context.Context, base string, models []string
 					out[i].Results[j].Error = "not asked: out of time"
 					return
 				}
-				out[i].Results[j].Result = ask(ctx)
+				rs := ask(ctx)
+				out[i].Results[j].Result, out[i].Results[j].Spares = verdict(rs)
 			}()
 		}
 	}

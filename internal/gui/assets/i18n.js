@@ -2165,6 +2165,8 @@ const I18N = {
     "None answered: check the URL and the key, or type a model the vendor serves": "都没有响应：请检查地址和密钥，或填写一个供应商提供的模型",
     "None answered, and no API key is typed: paste the key under API key and detect again": "都没有响应，且还没有填写 API 密钥：请在「API 密钥」中粘贴密钥后再检测",
     "Use these": "使用检测结果",
+    "backup": "备用",
+    "backup {url}: {how}": "备用 {url}：{how}",
     "Set the URLs of the APIs that answered; one not found there is cleared": "填入有响应的协议地址；不存在的协议地址会被清空",
     "Taken · save to keep": "已填入 · 保存后生效",
     "Ask {model} on {api} only": "{model} 只用 {api} 协议",

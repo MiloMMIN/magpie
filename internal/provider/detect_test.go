@@ -136,6 +136,83 @@ func TestDetectProtocols(t *testing.T) {
 	}
 }
 
+// A spare base URL the provider keeps is asked too, and its own answer
+// kept beside the verdict: one down shows rather than ride on the
+// first's, and one up when the first is down is still the answer asked.
+func TestDetectAsksSpareBases(t *testing.T) {
+	detectHome(t)
+	var mu sync.Mutex
+	var spareAsked []string
+	spare := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		spareAsked = append(spareAsked, r.Method+" "+r.URL.Path)
+		mu.Unlock()
+		io.WriteString(w, `{"id":"c","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"length"}]}`)
+	}))
+	defer spare.Close()
+
+	t.Run("first up, spare still asked", func(t *testing.T) {
+		main, _ := relay(t)
+		p := Provider{Key: "sk-r", Chat: main.URL + "/v1", Backups: map[string][]string{"chat": {spare.URL + "/v1"}}}
+		res, err := p.Detect(context.Background(), "", "gpt-5.5")
+		if err != nil {
+			t.Fatal(err)
+		}
+		chat := res[0]
+		if !chat.OK || chat.Answered != main.URL+"/v1" {
+			t.Fatalf("verdict: %+v", chat)
+		}
+		if len(chat.Spares) != 1 || !chat.Spares[0].OK || chat.Spares[0].Answered != spare.URL+"/v1" {
+			t.Fatalf("spares: %+v", chat.Spares)
+		}
+		if !slices.Contains(spareAsked, "POST /v1/chat/completions") {
+			t.Fatalf("spare never asked: %v", spareAsked)
+		}
+	})
+
+	t.Run("first down, spare answers", func(t *testing.T) {
+		dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "down", http.StatusBadGateway)
+		}))
+		defer dead.Close()
+		p := Provider{Key: "sk-r", Chat: dead.URL + "/v1", Backups: map[string][]string{"chat": {spare.URL + "/v1"}}}
+		res, err := p.Detect(context.Background(), "", "gpt-5.5")
+		if err != nil {
+			t.Fatal(err)
+		}
+		chat := res[0]
+		if !chat.OK || chat.Answered != spare.URL+"/v1" {
+			t.Fatalf("verdict should be the spare's: %+v", chat)
+		}
+		if len(chat.Spares) != 1 || !chat.Spares[0].OK {
+			t.Fatalf("spares: %+v", chat.Spares)
+		}
+	})
+
+	t.Run("both down, spare's miss shows", func(t *testing.T) {
+		dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "down", http.StatusBadGateway)
+		}))
+		defer dead.Close()
+		deadSpare := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "down too", http.StatusServiceUnavailable)
+		}))
+		defer deadSpare.Close()
+		p := Provider{Key: "sk-r", Chat: dead.URL + "/v1", Backups: map[string][]string{"chat": {deadSpare.URL + "/v1"}}}
+		res, err := p.Detect(context.Background(), "", "gpt-5.5")
+		if err != nil {
+			t.Fatal(err)
+		}
+		chat := res[0]
+		if chat.OK || chat.Status != http.StatusServiceUnavailable {
+			t.Fatalf("verdict: %+v", chat)
+		}
+		if len(chat.Spares) != 1 || chat.Spares[0].OK || chat.Spares[0].Status != http.StatusServiceUnavailable {
+			t.Fatalf("spares: %+v", chat.Spares)
+		}
+	})
+}
+
 // Some Responses relays reject the string shorthand and require message arrays.
 func TestResponsesProbesUseArrayInput(t *testing.T) {
 	detectHome(t)

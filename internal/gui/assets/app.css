@@ -2829,6 +2829,8 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .detect-row .detect-model { flex: 1; min-width: 0; height: 27px; font-size: 12px; }
 .detect-out[hidden] { display: none; }
 .detect-out .ep .pl { width: 72px; }
+.detect-out .ep.spare { margin-left: 24px; }
+.detect-out .ep.spare .pl { width: auto; font-style: normal; color: var(--faint); }
 .detect-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; padding-top: 2px; }
 .eps .detect-acts .text { margin: 0; }
 .detect-acts .pick-api.on { background: var(--pill); }

@@ -10567,6 +10567,18 @@ function detectAPIs(p, base, use) {
       res.title = (x.model ? t("model {model}", { model: x.model }) : "") + (x.ok ? "" : "\n" + why);
       e.append(pl, el("code", "", x.answered || x.base || "—"), res);
       out.append(e);
+      // each backup the API keeps got asked too; its own answer takes a
+      // row under the API's rather than hide behind the verdict
+      for (const s of x.spares || []) {
+        const se = el("div", "ep spare");
+        const swhy = s.status ? `${s.status} · ${s.error}` : t(s.error || "");
+        const sres = el("span", "res " + (s.ok ? "ok" : "bad"));
+        sres.append(svg(s.ok ? CHECK : CROSS, 10, 2));
+        sres.append(el("span", "", s.ok ? ledTook(s.ms) : swhy));
+        sres.title = s.ok ? "" : swhy;
+        se.append(el("span", "pl", t("backup")), el("code", "", s.answered || "—"), sres);
+        out.append(se);
+      }
     }
   };
   // what is missing, or what went wrong, said here under the buttons
@@ -10677,6 +10689,7 @@ function detectAPIs(p, base, use) {
         const why = x.status ? `${x.status} · ${x.error || ""}` : t(x.error || "");
         cell.append(el("span", "", x.ok ? ledTook(x.ms) : why));
         cell.title = `${md.model} · ${apiLabel(a)}\n` + (x.ok ? t("Answered in {took}", { took: ledTook(x.ms) }) : why);
+        if ((x.spares || []).length) cell.title += "\n" + x.spares.map((s) => t("backup {url}: {how}", { url: s.answered || "—", how: s.ok ? ledTook(s.ms) : (s.status ? `${s.status} · ${s.error}` : t(s.error || "")) })).join("\n");
         if (x.ok) okOn.push(a);
         grid.append(cell);
       }

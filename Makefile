@@ -33,14 +33,15 @@ ifeq ($(shell go env GOOS),android)
 endif
 
 .PHONY: build cli install test test-ui app icons release release-cli release-windows release-linux clean dev dev-once
+.PHONY: winres
 
-build:
+build: $(if $(findstring windows,$(shell go env GOOS)),winres)
 	go build -tags "$(TAGS)" -trimpath -ldflags="$(LDFLAGS)" -o magpie .
 
 cli:
 	CGO_ENABLED=0 go build -tags nogui -trimpath -ldflags="$(LDFLAGS)" -o magpie .
 
-install:
+install: $(if $(findstring windows,$(shell go env GOOS)),winres)
 	go install -tags "$(TAGS)" -trimpath -ldflags="$(LDFLAGS)" .
 
 test:
@@ -98,6 +99,18 @@ release-cli:
 		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -tags nogui -trimpath -ldflags="$(LDFLAGS)" -o dist/magpie-cli-$$os-$$arch$$ext . || exit 1; \
 	done
 
+# Windows resources: `go build` links rsrc_windows_<arch>.syso from the
+# package folder when it is there; nothing there, the exe gets no .rsrc
+# section, so the taskbar shows Windows' blank-page icon and the DPI-aware
+# manifest is gone too. go build never makes it, a checkout or worktree has
+# none, and clean removes it: winres (re)generates it for GOARCH, and every
+# Windows build path runs it first. check_rsrc reads the finished exe's PE
+# section table so a missing .rsrc fails the build instead of shipping the
+# blank icon again.
+winres:
+	@go run github.com/tc-hib/go-winres@v0.3.3 make --in build/windows/winres.json --arch $(or $(GOARCH),$(shell go env GOARCH)) --out rsrc \
+		--file-version "$(or $(WINVER),0.0.0)" --product-version "$(or $(WINVER),0.0.0)"
+
 # The desktop app for Windows: the system WebView2 needs no cgo, so both
 # arches cross-compile. Linked as a GUI program (no console window), with
 # the icon, version and a DPI-aware manifest from build/windows.
@@ -109,6 +122,7 @@ release-windows:
 	@for arch in amd64 arm64; do \
 		echo "  windows/$$arch (app)"; \
 		CGO_ENABLED=0 GOOS=windows GOARCH=$$arch go build -tags production -trimpath -ldflags="$(LDFLAGS) -H windowsgui" -o dist/magpie-windows-$$arch.exe . || exit 1; \
+		go run build/check_rsrc.go dist/magpie-windows-$$arch.exe || exit 1; \
 	done; rm -f rsrc_windows_*.syso
 
 # The desktop app for Linux links GTK 3 and WebKitGTK 4.1 through cgo, so it
@@ -130,11 +144,11 @@ DEV_ADDR ?= 127.0.0.1:3426
 DEV_UI ?= 127.0.0.1:3427
 DEV_BACKEND ?= 127.0.0.1:3428
 DEV_CONTROL ?= 127.0.0.1:3429
-dev:
+dev: $(if $(findstring windows,$(shell go env GOOS)),winres)
 	@if command -v fswatch >/dev/null; then \
 	  MAGPIE_ADDR=$(DEV_ADDR) MAGPIE_DEV_UI=$(DEV_UI) MAGPIE_DEV_BACKEND=$(DEV_BACKEND) MAGPIE_DEV_CONTROL=$(DEV_CONTROL) build/dev.sh; \
 	else $(MAKE) --no-print-directory dev-once; fi
 
-dev-once:
+dev-once: $(if $(findstring windows,$(shell go env GOOS)),winres)
 	@go build -tags dev -o magpie-dev . && echo "  magpie-dev · UI from internal/gui/assets, reload on save · gateway $(DEV_ADDR)"
 	@MAGPIE_ADDR=$(DEV_ADDR) MAGPIE_DEV_UI=$(DEV_UI) ./magpie-dev app
