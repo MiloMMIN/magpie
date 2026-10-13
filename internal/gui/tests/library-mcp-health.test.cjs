@@ -18,7 +18,7 @@ const assets = path.resolve(__dirname, "../assets");
 const HOME = "/Users/lc";
 const fixture = () => ({
   dir: `${HOME}/.magpie/library`, backups: `${HOME}/.magpie/backups`, home: HOME,
-  agents: [{ id: "claude", name: "Claude Code", icon: "claudecode-color", skills: `${HOME}/.claude/skills`, mcp: `${HOME}/.claude.json` }],
+  agents: [{ id: "claude", name: "Claude Code", icon: "claudecode-color", skills: `${HOME}/.claude/skills`, mcp: `${HOME}/.claude.json`, projectMCP: ".mcp.json" }],
   instructions: { agents: [], sets: [] }, foundServers: [], foundSkills: [], skills: [],
   // github is on in a project only, which is still in use
   projects: [{ dir: `${HOME}/code/app`, name: "app", copy: false, skills: {}, placed: [], servers: { github: ["claude"] }, wrote: {} }],
@@ -151,8 +151,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.ok(slowBox.height <= 18 && slowBox.width <= 220, "the step's name widens or wraps the status: " + JSON.stringify(slowBox));
 
         // back from another tab: not checked again
-        await page.locator(".lib-tabs button", { hasText: w.skills }).click();
-        await page.locator(".lib-tabs button", { hasText: /MCP/ }).click();
+        await page.locator(":is(.lib-tabs button, .nav-s):visible", { hasText: w.skills }).click();
+        await page.locator(":is(.lib-tabs button, .nav-s):visible", { hasText: /MCP/ }).click();
         await status("files").waitFor();
         await page.waitForTimeout(150);
         assert.equal(checks.length, 1, "the servers were checked again on coming back");
