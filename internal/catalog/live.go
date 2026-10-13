@@ -323,6 +323,12 @@ func fetchOne(ctx context.Context, url, key string, anthropic bool, headers map[
 			m.Output = int(n)
 		}
 		m.Efforts = levelsOf(r.Levels)
+		// Upstream's `reasoning` (bool, or an object/enum some gateways
+		// send) is honored verbatim when truthy; a missing or falsy flag
+		// falls through to `Decorate`'s models.dev lookup.
+		if flagIsTrue(r.ReasoningFlag) {
+			m.Reasoning = true
+		}
 		if r.WebSearch == "native" || r.WebSearch == "magpie" {
 			m.WebSearch = r.WebSearch
 		}
@@ -389,6 +395,11 @@ type liveModel struct {
 	Native []string `json:"native_endpoints"`
 	Output any      `json:"max_output_tokens"`
 	Levels any      `json:"supported_reasoning_levels"`
+	// whether another magpie or a gateway says the model thinks: any, as
+	// a vendor's odd value mustn't lose the whole list. An upstream
+	// "reasoning":true wins over an absent field so a farm's new-api
+	// swe-* (reasoning-only ids, no levels) keeps its dial (#swe2).
+	ReasoningFlag any `json:"reasoning"`
 	// another magpie's name for the model with its provider there after
 	// it, and "image", "video" or "decision" for its other models
 	Label string `json:"magpie_label"`
@@ -410,7 +421,15 @@ type liveModel struct {
 	TypeTarget string `json:"type_target"`
 }
 
-// tiersOf are the ids of a list's service_tiers, as Codex's catalog
+// flagIsTrue reports whether an upstream `reasoning` value affirms the
+// model thinks. Only literal true counts; strings/objects are left to the
+// catalog's Decorate (reasoning options objects carry their own schema).
+func flagIsTrue(v any) bool {
+	b, _ := v.(bool)
+	return b
+}
+
+// levelsOf are the efforts of a list's supported_reasoning_levels, as
 // writes them ([{"id":"priority","name":"Fast"}]) or as plain ids.
 func tiersOf(v any) []string {
 	xs, _ := v.([]any)

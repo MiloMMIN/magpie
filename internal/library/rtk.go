@@ -176,12 +176,12 @@ var rtkSpecs = map[string]rtkSpec{
 		flags: []string{"--agent", "hermes"}, patch: true,
 		has: func(*agent.Agent) bool { return exists(filepath.Join(hermesPlugin(), "plugin.yaml")) },
 		files: func(*agent.Agent) []string {
-			return []string{filepath.Join(home(), ".hermes", "config.yaml"), filepath.Join(hermesPlugin(), "plugin.yaml"), filepath.Join(hermesPlugin(), "__init__.py")}
+			return []string{filepath.Join(hermesHome(), "config.yaml"), filepath.Join(hermesPlugin(), "plugin.yaml"), filepath.Join(hermesPlugin(), "__init__.py")}
 		},
 		remove: func(*agent.Agent) error {
-			return errors.Join(os.RemoveAll(hermesPlugin()), dropHermesPlugin(filepath.Join(home(), ".hermes", "config.yaml")))
+			return errors.Join(os.RemoveAll(hermesPlugin()), dropHermesPlugin(filepath.Join(hermesHome(), "config.yaml")))
 		},
-		dir: func(*agent.Agent) string { return filepath.Join(home(), ".hermes") },
+		dir: func(*agent.Agent) string { return hermesHome() },
 	},
 }
 
@@ -292,7 +292,18 @@ var openCodeVersion = func() string {
 	return ""
 }
 
-func hermesPlugin() string { return filepath.Join(home(), ".hermes", "plugins", "rtk-rewrite") }
+// hermesPlugin resolves the rtk-rewrite plugin dir under the live Hermes
+// home: HERMES_HOME first (the agent's real config root), then ~/.hermes.
+func hermesPlugin() string {
+	return filepath.Join(hermesHome(), "plugins", "rtk-rewrite")
+}
+
+func hermesHome() string {
+	if h := os.Getenv("HERMES_HOME"); h != "" {
+		return h
+	}
+	return filepath.Join(home(), ".hermes")
+}
 
 // extensionSpec is pi's and omp's: an extension of rtk's own, and nothing else.
 func extensionSpec(id string) rtkSpec {
